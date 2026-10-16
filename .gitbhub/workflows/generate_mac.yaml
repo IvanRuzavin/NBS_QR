@@ -1,0 +1,36 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller requests reportlab pillow
+
+      - name: Build macOS application
+        run: |
+          pyinstaller --windowed --onedir \
+            --name IPS-QR ips_qr_gui.py
+
+      - name: Package application
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/IPS-QR.app IPS-QR-macOS.zip
+
+      - name: Upload macOS application
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPS-QR-macOS
+          path: IPS-QR-macOS.zip
