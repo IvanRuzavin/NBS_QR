@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """Simple desktop GUI for NBS IPS QR payment PDFs.
 
-Only asks for amount, payer name and payment purpose; recipient and payment
-code come from the successful transaction receipt. Creates a reference from
-local generation time: YYYYMMDDHHMMSS (IPS QR RO model 00).
+Asks for the payer type/payment code, amount, payer name and payment purpose;
+the recipient comes from the successful transaction receipt. Creates a reference
+from local generation time: YYYYMMDDHHMMSS (IPS QR RO model 00).
 
 Run: python ips_qr_gui.py
 Dependencies: requests, reportlab, Pillow and standard-library tkinter.
@@ -45,7 +45,10 @@ from reportlab.platypus import (
 # ---- Fixed payment information (taken from the attached bank receipt) ----
 RECIPIENT = "Sofiia Zhuikova PR Ostalo Obrazovanje Ursa School Beograd"
 RECIPIENT_ACCOUNT = "105-0000003369490-26"
-PAYMENT_CODE = "289"
+# Payment codes used by this application for the selected payer category.
+PAYMENT_CODE_INDIVIDUAL = "289"
+PAYMENT_CODE_BUSINESS = "221"
+VALID_PAYMENT_CODES = frozenset({PAYMENT_CODE_INDIVIDUAL, PAYMENT_CODE_BUSINESS})
 CURRENCY = "RSD"
 # The receipt has no fixed payment reference. A unique timestamp reference
 # is generated for each new payment and used with NBS model 00.
@@ -121,7 +124,12 @@ def display_amount(amount: Decimal) -> str:
     return f"{int(whole):,}".replace(",", ".") + "," + decimals
 
 
-def make_ips_payload(amount: Decimal, payer: str, purpose: str, reference: str) -> str:
+def make_ips_payload(
+    amount: Decimal, payer: str, purpose: str, reference: str,
+    payment_code: str = PAYMENT_CODE_INDIVIDUAL,
+) -> str:
+    if payment_code not in VALID_PAYMENT_CODES:
+        raise ValueError("Nepodržana šifra plaćanja.")
     account = RECIPIENT_ACCOUNT.replace("-", "")
     if not re.fullmatch(r"\d{18}", account):
         raise ValueError("Fiksni račun primaoca nije u formatu 18 cifara.")
@@ -133,7 +141,7 @@ def make_ips_payload(amount: Decimal, payer: str, purpose: str, reference: str) 
         f"N:{RECIPIENT}",
         f"I:{nbs_amount(amount)}",
         f"P:{payer}",
-        f"SF:{PAYMENT_CODE}",
+        f"SF:{payment_code}",
         f"S:{purpose}",
         f"RO:00{reference}",
     ))
@@ -222,6 +230,7 @@ def setup_fonts() -> tuple[str, str]:
 def create_pdf(
     output: Path, qr_image_bytes: bytes, amount: Decimal, payer: str, purpose: str,
     reference: str, generated_at: datetime,
+    payment_code: str = PAYMENT_CODE_INDIVIDUAL,
 ) -> None:
     regular, bold = setup_fonts()
     styles = {
@@ -295,7 +304,7 @@ def create_pdf(
     field_rows = [
         ("Naziv platioca", payer),
         ("Svrha plaćanja", purpose),
-        ("Šifra plaćanja", PAYMENT_CODE),
+        ("Šifra plaćanja", payment_code),
         ("Valuta", CURRENCY),
         ("Model i poziv na broj", f"00 / {reference}"),
         ("Generisano", generated_at.strftime("%d.%m.%Y. %H:%M:%S")),
@@ -339,25 +348,25 @@ class PaymentGUI(tk.Tk):
         super().__init__()
         self.title("IPS QR - Nalog za uplatu")
         self.geometry("560x755")
-        self.minsize(530, 750)
+        self.minsize(530, 720)
         self.configure(bg=BG)
         self._events: queue.Queue[tuple[str, object]] = queue.Queue()
         self._is_busy = False
         self._build_interface()
 
     def _build_interface(self) -> None:
-        root = tk.Frame(self, bg=BG, padx=28, pady=24)
+        root = tk.Frame(self, bg=BG, padx=28, pady=16)
         root.pack(fill="both", expand=True)
 
         tk.Label(root, text="IPS QR PLAĆANJE", bg=BG, fg=INK,
                  font=("Arial", 22, "bold"), anchor="w").pack(fill="x")
         tk.Label(root, text="Kreiranje QR koda i PDF naloga za uplatu",
                  bg=BG, fg=SUBTLE, font=("Arial", 10),
-                 anchor="w").pack(fill="x", pady=(4, 17))
+                 anchor="w").pack(fill="x", pady=(4, 12))
 
         card = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=STROKE)
         card.pack(fill="x")
-        content = tk.Frame(card, bg=PANEL, padx=21, pady=18)
+        content = tk.Frame(card, bg=PANEL, padx=21, pady=13)
         content.pack(fill="x")
 
         tk.Label(content, text="PRIMALAC (FIKSNI PODACI)", bg=PANEL, fg=SUBTLE,
@@ -365,16 +374,36 @@ class PaymentGUI(tk.Tk):
         tk.Label(content, text=RECIPIENT, bg=PANEL, fg=INK,
                  font=("Arial", 10, "bold"), wraplength=454,
                  justify="left", anchor="w").pack(fill="x", pady=(7, 3))
-        tk.Label(content, text=f"Račun: {RECIPIENT_ACCOUNT}  •  Šifra: {PAYMENT_CODE}",
-                 bg=PANEL, fg=SUBTLE, font=("Arial", 9),
-                 anchor="w").pack(fill="x")
+        self.recipient_info = tk.Label(
+            content, text="", bg=PANEL, fg=SUBTLE,
+            font=("Arial", 9), anchor="w",
+        )
+        self.recipient_info.pack(fill="x")
 
-        ttk.Separator(content, orient="horizontal").pack(fill="x", pady=(18, 14))
+        ttk.Separator(content, orient="horizontal").pack(fill="x", pady=(12, 9))
+
+        tk.Label(content, text="TIP PLATIOCA", bg=PANEL, fg=SUBTLE,
+                 font=("Arial", 9, "bold"), anchor="w").pack(fill="x", pady=(0, 5))
+        self.payer_type = tk.StringVar(value="individual")
+        self.payer_type_row = tk.Frame(content, bg=PANEL)
+        self.payer_type_row.pack(fill="x", pady=(0, 7))
+        for label, value in (
+            ("Fizičko lice", "individual"),
+            ("Pravno lice / preduzetnik", "business"),
+        ):
+            tk.Radiobutton(
+                self.payer_type_row, text=label, value=value,
+                variable=self.payer_type, command=self._update_payment_code,
+                bg=PANEL, fg=INK, selectcolor=PANEL, activebackground=PANEL,
+                activeforeground=INK, font=("Arial", 10), cursor="hand2",
+                highlightthickness=0, bd=0,
+            ).pack(side="left", padx=(0, 18))
 
         self.amount_entry = self._input(content, "Iznos (RSD)", "Primer: 6.000,00")
         self.payer_entry = self._input(content, "Naziv platioca", "Ime i prezime ili naziv firme")
         self.purpose_entry = self._input(content, "Svrha plaćanja", "Maksimalno 35 znakova")
         self.amount_entry.focus_set()
+        self._update_payment_code()
 
         tk.Label(content, text="POZIV NA BROJ", bg=PANEL, fg=SUBTLE,
                  font=("Arial", 9, "bold"), anchor="w").pack(fill="x", pady=(4, 4))
@@ -389,7 +418,7 @@ class PaymentGUI(tk.Tk):
             font=("Arial", 11, "bold"), padx=12, pady=14,
             borderwidth=0, highlightthickness=0,
         )
-        self.generate_btn.pack(fill="x", pady=(20, 7))
+        self.generate_btn.pack(fill="x", pady=(14, 5))
 
         self.progress = ttk.Progressbar(root, mode="indeterminate", length=220)
         self.progress.pack(fill="x", pady=(0, 4))
@@ -400,9 +429,12 @@ class PaymentGUI(tk.Tk):
                  font=("Arial", 9), anchor="w", wraplength=490,
                  justify="left").pack(fill="x", pady=(5, 0))
 
-        tk.Label(root, text="QR kod popunjava nalog u aplikaciji banke; ne izvršava plaćanje.",
-                 bg=BG, fg=SUBTLE, font=("Arial", 8), anchor="w",
-                 justify="left", wraplength=490).pack(side="bottom", fill="x")
+        self.footer_label = tk.Label(
+            root, text="QR kod popunjava nalog u aplikaciji banke; ne izvršava plaćanje.",
+            bg=BG, fg=SUBTLE, font=("Arial", 8), anchor="w",
+            justify="left", wraplength=490,
+        )
+        self.footer_label.pack(side="bottom", fill="x")
 
         for entry in (self.amount_entry, self.payer_entry, self.purpose_entry):
             entry.bind("<Return>", lambda _event: self.generate())
@@ -415,10 +447,22 @@ class PaymentGUI(tk.Tk):
                          insertbackground=INK, relief="solid", bd=1,
                          highlightthickness=1, highlightbackground=STROKE,
                          highlightcolor=ACCENT)
-        field.pack(fill="x", ipady=7)
+        field.pack(fill="x", ipady=5)
         tk.Label(parent, text=hint, bg=PANEL, fg=SUBTLE,
-                 font=("Arial", 8), anchor="w").pack(fill="x", pady=(4, 13))
+                 font=("Arial", 8), anchor="w").pack(fill="x", pady=(3, 7))
         return field
+
+    def _selected_payment_code(self) -> str:
+        if self.payer_type.get() == "individual":
+            return PAYMENT_CODE_INDIVIDUAL
+        if self.payer_type.get() == "business":
+            return PAYMENT_CODE_BUSINESS
+        raise ValueError("Izaberite važeću vrstu platioca.")
+
+    def _update_payment_code(self) -> None:
+        self.recipient_info.configure(
+            text=f"Račun: {RECIPIENT_ACCOUNT}  •  Šifra: {self._selected_payment_code()}"
+        )
 
     def generate(self) -> None:
         if self._is_busy:
@@ -429,7 +473,8 @@ class PaymentGUI(tk.Tk):
             purpose = require_text(self.purpose_entry.get(), "Svrha plaćanja")
             generated_at = datetime.now().astimezone()
             reference = generated_at.strftime("%Y%m%d%H%M%S")
-            payload = make_ips_payload(amount, payer, purpose, reference)
+            payment_code = self._selected_payment_code()
+            payload = make_ips_payload(amount, payer, purpose, reference, payment_code)
         except ValueError as exc:
             messagebox.showerror("Proverite podatke", str(exc), parent=self)
             return
@@ -451,20 +496,23 @@ class PaymentGUI(tk.Tk):
 
         thread = threading.Thread(
             target=self._worker,
-            args=(Path(selected), payload, amount, payer, purpose, reference, generated_at),
+            args=(Path(selected), payload, amount, payer, purpose, reference,
+                  generated_at, payment_code),
             daemon=True,
         )
         thread.start()
         self.after(100, self._check_events)
 
     def _worker(self, output: Path, payload: str, amount: Decimal, payer: str,
-                purpose: str, reference: str, generated_at: datetime) -> None:
+                purpose: str, reference: str, generated_at: datetime,
+                payment_code: str) -> None:
         temp = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
         try:
             # Check font availability before making any network request.
             setup_fonts()
             qr_png = generate_nbs_qr(payload)
-            create_pdf(temp, qr_png, amount, payer, purpose, reference, generated_at)
+            create_pdf(temp, qr_png, amount, payer, purpose, reference,
+                       generated_at, payment_code)
             os.replace(temp, output)
             self._events.put(("ok", (output, reference)))
         except Exception as exc:
