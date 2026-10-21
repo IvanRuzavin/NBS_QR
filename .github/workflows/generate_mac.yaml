@@ -5,7 +5,14 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15-intel   # Intel Macs (x86_64)
+            arch: x86_64
+          - runner: macos-latest     # Apple Silicon Macs (arm64)
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -27,10 +34,10 @@ jobs:
       - name: Package application
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            dist/IPS-QR.app IPS-QR-macOS.zip
+            dist/IPS-QR.app IPS-QR-macOS-${{ matrix.arch }}.zip
 
       - name: Upload macOS application
         uses: actions/upload-artifact@v4
         with:
-          name: IPS-QR-macOS
-          path: IPS-QR-macOS.zip
+          name: IPS-QR-macOS-${{ matrix.arch }}
+          path: IPS-QR-macOS-${{ matrix.arch }}.zip
