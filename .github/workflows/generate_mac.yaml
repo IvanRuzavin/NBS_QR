@@ -31,6 +31,11 @@ jobs:
           pyinstaller --windowed --onedir \
             --name IPS-QR ips_qr_gui.py
 
+      - name: Ad-hoc sign application
+        run: |
+          codesign --force --deep --sign - dist/IPS-QR.app
+          codesign --verify --deep --strict dist/IPS-QR.app
+
       - name: Package application
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
